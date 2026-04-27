@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 TRIAL_DAYS = 2
 
 # Бренди-виключення (не показувати в списку)
-EXCLUDED_BRANDS = {"NoName", "прайс 01.10.2025"}
+EXCLUDED_BRANDS = {"NoName", "NO NAME", "прайс 01.10.2025"}
 
 
 def get_conn():
