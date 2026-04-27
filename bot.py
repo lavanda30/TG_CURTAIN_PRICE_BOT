@@ -279,7 +279,7 @@ async def _finish_purchase(query, user, ctx):
 
     # Нотифікація адміну
     if ADMIN_ID:
-        name = f"@{user.username}" if user.username else user.phone_number
+        name = f"@{user.username}" if user.username else user.first_name
         msg = (
             f"💳 *Новий запит на придбання!*\n\n"
             f"👤 Юзер: {name} (`{user.id}`)\n"
@@ -375,7 +375,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # Нотифікація адміну
             if ADMIN_ID:
                 db_user = get_user(user.id)
-                name    = f"@{user.username}" if user.username else user.first_name
+                name = f"@{user.username.replace('_', '\\_')}" if user.username else user.first_name
                 await ctx.bot.send_message(
                     ADMIN_ID,
                     f"🆕 *Новий користувач (пробний доступ)*\n\n"
