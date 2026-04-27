@@ -123,7 +123,7 @@ def kb_brand_select(selected: set, all_brands: list, page: int = 0) -> InlineKey
     return InlineKeyboardMarkup(rows)
 
 
-def kb_main(brands: list) -> InlineKeyboardMarkup:
+def kb_main(brands: list, purchase_requested: bool = False) -> InlineKeyboardMarkup:
     rows = []
     for i in range(0, len(brands), 2):
         row = []
@@ -134,7 +134,8 @@ def kb_main(brands: list) -> InlineKeyboardMarkup:
         InlineKeyboardButton("📋 Мої бренди",      callback_data="mysub"),
         InlineKeyboardButton("🔄 Змінити бренди", callback_data="change_brands"),
     ])
-    rows.append([InlineKeyboardButton("💳 Отримати бота",         callback_data="purchase_start")])
+    if not purchase_requested:
+        rows.append([InlineKeyboardButton("💳 Отримати бота", callback_data="purchase_start")])
     return InlineKeyboardMarkup(rows)
 
 
