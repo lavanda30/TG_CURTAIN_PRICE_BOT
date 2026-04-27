@@ -124,6 +124,7 @@ def kb_brand_select(selected: set, all_brands: list, page: int = 0) -> InlineKey
         f"✔️ Підтвердити вибір ({n} брендів)",
         callback_data="confirm_brands"
     )])
+    rows.append([InlineKeyboardButton("❌ Скасувати", callback_data="cancel_purchase")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -183,7 +184,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if db_user["trial_used"]:
         await update.message.reply_text(
             f"👋 Привіт, {user.first_name}!\n\n"
-            "⏰ Нажаль, Ваш пробний доступ завершено.\n\n"
+            "⏰ На жаль, Ваш пробний доступ завершено.\n\n"
             "Натисніть *«Отримати бота»* щоб мати такого бота:",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[
@@ -198,6 +199,9 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"👋 Привіт, *{user.first_name}*!\n\n"
         f"🎁 Вам доступний *{TRIAL_DAYS}-денний повний доступ*.\n\n"
+        f"Цей бот дозволяє *автоматично і миттєво* шукати необхідні позиції в множині прайс-листів постачальників.\n\n"
+        f"Достатньо ввести код товару або його частину — бот покаже постачальника, ціну в доларах і гривнях "
+        f"(комерційний курс 45 та подвійна націнка).\n\n"
         f"Оберіть бренди, які Вас цікавлять:",
         parse_mode="Markdown",
         reply_markup=kb_brand_select(set(), all_brands)
@@ -236,7 +240,8 @@ async def _ask_purchase_q1(query):
             [
                 InlineKeyboardButton("✅ Так", callback_data="pq1:yes"),
                 InlineKeyboardButton("❌ Ні",  callback_data="pq1:no"),
-            ]
+            ],
+            [InlineKeyboardButton("↩️ Скасувати", callback_data="cancel_purchase")]
         ])
     )
 
@@ -250,7 +255,8 @@ async def _ask_purchase_q2(query):
             [
                 InlineKeyboardButton("✅ Так", callback_data="pq2:yes"),
                 InlineKeyboardButton("❌ Ні",  callback_data="pq2:no"),
-            ]
+            ],
+            [InlineKeyboardButton("↩️ Скасувати", callback_data="cancel_purchase")]
         ])
     )
 
@@ -279,10 +285,18 @@ async def _finish_purchase(query, user, ctx):
 
     # Нотифікація адміну
     if ADMIN_ID:
-        name = f"@{user.username}" if user.username else user.first_name
+        if user.username:
+            # Зберігаємо підкреслення, щоб @Anna_Love не ставало @AnnaLove
+            safe_username = user.username.replace("_", "\_")
+            name_line = f"@{safe_username} (`{user.id}`)"
+        else:
+            # Немає username — даємо ім'я + посилання tg://user?id=...
+            first = user.first_name or ""
+            last  = (" " + user.last_name) if user.last_name else ""
+            name_line = f"[{first}{last}](tg://user?id={user.id}) (`{user.id}`)"
         msg = (
             f"💳 *Новий запит на придбання!*\n\n"
-            f"👤 Юзер: {name} (`{user.id}`)\n"
+            f"👤 Юзер: {name_line}\n"
             f"🏷 Бренди: {brands_text}\n\n"
             f"❓ Є бренди поза списком: *{q1_text}*\n"
             f"❓ Потрібна кастомізація ціни: *{q2_text}*"
@@ -376,6 +390,13 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if ADMIN_ID:
                 db_user = get_user(user.id)
                 name = f"@{user.username.replace('_', '\\_')}" if user.username else user.first_name
+                if user.username:
+                    safe_un = user.username.replace("_", "\_")
+                    name = f"@{safe_un}"
+                else:
+                    first = user.first_name or ""
+                    last  = (" " + user.last_name) if user.last_name else ""
+                    name = f"[{first}{last}](tg://user?id={user.id})"
                 await ctx.bot.send_message(
                     ADMIN_ID,
                     f"🆕 *Новий користувач (пробний доступ)*\n\n"
@@ -484,6 +505,30 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     # ── Purchase flow ──
+    elif cmd == "cancel_purchase":
+        _pending.pop(user.id, None)
+        _purchase.pop(user.id, None)
+        sub = get_active_subscription(user.id)
+        if sub:
+            await _show_main(q, sub)
+        else:
+            await q.edit_message_text(
+                "↩️ Скасовано.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("▶️ Почати знову", callback_data="start_over")
+                ]])
+            )
+
+    elif cmd == "start_over":
+        _pending.pop(user.id, None)
+        _purchase.pop(user.id, None)
+        all_brands = get_all_brands()
+        _pending[user.id] = {"selected": set(), "mode": "trial"}
+        await q.edit_message_text(
+            "Оберіть бренди, які Вас цікавлять:",
+            reply_markup=kb_brand_select(set(), all_brands)
+        )
+
     elif cmd == "purchase_start":
         sub = get_active_subscription(user.id)
         brands = sub["brands"] if sub else get_last_brands(user.id)
@@ -630,6 +675,14 @@ def main():
     app.add_handler(CommandHandler("users", cmd_users))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+
+    async def post_init(application):
+        from telegram import BotCommand
+        await application.bot.set_my_commands([
+            BotCommand("start", "Запустити бота / Головна"),
+        ])
+
+    app.post_init = post_init
 
     logger.info("Bot polling…")
     app.run_polling(drop_pending_updates=True)
