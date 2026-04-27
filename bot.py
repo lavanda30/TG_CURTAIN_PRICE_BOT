@@ -406,11 +406,20 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
 
             sub = get_active_subscription(user.id)
-            # Показуємо підтвердження перед головною
-            brands_text = "\n".join(f"  {brand_icon(b, get_all_brands())} {b}" for b in brands_list)
+            # Показуємо бренди в 2 стовпці
+            all_b = get_all_brands()
+            lines = []
+            for i in range(0, len(brands_list), 2):
+                left = f"{brand_icon(brands_list[i], all_b)} {brands_list[i]}"
+                if i + 1 < len(brands_list):
+                    right = f"{brand_icon(brands_list[i+1], all_b)} {brands_list[i+1]}"
+                    lines.append(f"{left:<22} {right}")
+                else:
+                    lines.append(left)
+            brands_text = "\n".join(lines)
             await q.edit_message_text(
                 f"✅ *Чудово!* Ваш пробний доступ активовано!\n\n"
-                f"Ви обрали *{len(brands_list)} брендів:*\n{brands_text}\n\n"
+                f"Ви обрали *{len(brands_list)} брендів:*\n`{brands_text}`\n\n"
                 f"⏱ Доступ діє *{TRIAL_DAYS} дні*",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([[
@@ -424,13 +433,23 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             update_trial_brands(user.id, brands_list)
             _pending.pop(user.id, None)
             sub = get_active_subscription(user.id)
-            brands_text = "\n".join(f"  {brand_icon(b, get_all_brands())} {b}" for b in brands_list)
+            all_b = get_all_brands()
+            # Два стовпці в тексті
+            lines = []
+            for i in range(0, len(brands_list), 2):
+                left  = f"{brand_icon(brands_list[i], all_b)} {brands_list[i]}"
+                if i + 1 < len(brands_list):
+                    right = f"{brand_icon(brands_list[i+1], all_b)} {brands_list[i+1]}"
+                    lines.append(f"{left:<22} {right}")
+                else:
+                    lines.append(left)
+            brands_text = "\n".join(lines)
             await q.edit_message_text(
                 f"✅ Бренди оновлено!\n\n"
-                f"Обрані бренди *({len(brands_list)}):*\n{brands_text}",
+                f"Обрані бренди *({len(brands_list)}):*\n`{brands_text}`",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🛏 Переглянути прайси", callback_data="main"),
+                    InlineKeyboardButton("🛒 Переглянути прайси", callback_data="main"),
                     InlineKeyboardButton("🔄 Змінити ще", callback_data="change_brands")
                 ]])
             )
