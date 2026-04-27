@@ -11,16 +11,10 @@ from psycopg2.extras import RealDictCursor
 
 logger = logging.getLogger(__name__)
 
-CARD_NUMBER = "0000 0000 0000 0000"  # ← замінити на реальний номер картки
-
 TRIAL_DAYS = 2
-PRICE_SMALL = 250   # до 15 брендів
-PRICE_BIG   = 380   # більше 15 брендів
-BRAND_LIMIT = 15    # межа тарифів
 
-
-def calc_amount(brands_count: int) -> int:
-    return PRICE_SMALL if brands_count <= BRAND_LIMIT else PRICE_BIG
+# Бренди-виключення (не показувати в списку)
+EXCLUDED_BRANDS = {"NoName", "прайс 01.10.2025"}
 
 
 def get_conn():
@@ -35,38 +29,42 @@ def init_db():
         with conn.cursor() as cur:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
-                    telegram_id BIGINT PRIMARY KEY,
-                    username    TEXT,
-                    first_name  TEXT,
-                    trial_used  BOOLEAN DEFAULT FALSE,
-                    created_at  TIMESTAMP DEFAULT NOW()
+                    telegram_id         BIGINT PRIMARY KEY,
+                    username            TEXT,
+                    first_name          TEXT,
+                    trial_used          BOOLEAN DEFAULT FALSE,
+                    purchase_requested  BOOLEAN DEFAULT FALSE,
+                    purchase_q1         TEXT,
+                    purchase_q2         TEXT,
+                    created_at          TIMESTAMP DEFAULT NOW()
                 );
 
                 CREATE TABLE IF NOT EXISTS subscriptions (
                     id          SERIAL PRIMARY KEY,
                     telegram_id BIGINT REFERENCES users(telegram_id),
                     brands      TEXT[],
-                    amount      INT,
                     expires_at  TIMESTAMP,
                     active      BOOLEAN DEFAULT FALSE,
                     created_at  TIMESTAMP DEFAULT NOW()
                 );
-
-                CREATE TABLE IF NOT EXISTS payments (
-                    id          SERIAL PRIMARY KEY,
-                    telegram_id BIGINT REFERENCES users(telegram_id),
-                    brands      TEXT[],
-                    amount      INT,
-                    status      TEXT DEFAULT 'pending',
-                    created_at  TIMESTAMP DEFAULT NOW()
-                );
             """)
+
+            # Додати нові колонки якщо таблиця вже існує (міграція)
+            for col_def in [
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS purchase_requested BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS purchase_q1 TEXT",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS purchase_q2 TEXT",
+            ]:
+                try:
+                    cur.execute(col_def)
+                except Exception:
+                    pass
+
         conn.commit()
     logger.info("DB initialized")
 
 
 def upsert_user(telegram_id: int, username: str, first_name: str) -> dict:
-    """Створює або оновлює користувача. Повертає запис."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -89,19 +87,29 @@ def get_user(telegram_id: int):
 
 
 def start_trial(telegram_id: int, brands: list) -> datetime:
-    """Запускає пробний період. Повертає дату закінчення."""
+    """Запускає пробний доступ на TRIAL_DAYS днів."""
     expires = datetime.now() + timedelta(days=TRIAL_DAYS)
     with get_conn() as conn:
         with conn.cursor() as cur:
-            # Деактивуємо попередні
             cur.execute("UPDATE subscriptions SET active = FALSE WHERE telegram_id = %s", (telegram_id,))
             cur.execute("""
-                INSERT INTO subscriptions (telegram_id, brands, amount, expires_at, active)
-                VALUES (%s, %s, 0, %s, TRUE)
+                INSERT INTO subscriptions (telegram_id, brands, expires_at, active)
+                VALUES (%s, %s, %s, TRUE)
             """, (telegram_id, brands, expires))
             cur.execute("UPDATE users SET trial_used = TRUE WHERE telegram_id = %s", (telegram_id,))
         conn.commit()
     return expires
+
+
+def update_trial_brands(telegram_id: int, brands: list):
+    """Оновлює список брендів в активній підписці (під час триалу)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE subscriptions SET brands = %s
+                WHERE telegram_id = %s AND active = TRUE AND expires_at > NOW()
+            """, (brands, telegram_id))
+        conn.commit()
 
 
 def get_active_subscription(telegram_id: int):
@@ -115,48 +123,42 @@ def get_active_subscription(telegram_id: int):
             return cur.fetchone()
 
 
-def create_payment(telegram_id: int, brands: list, amount: int) -> int:
+def save_purchase_request(telegram_id: int, q1: str, q2: str):
+    """Зберігає відповіді на питання при запиті на придбання."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO payments (telegram_id, brands, amount, status)
-                VALUES (%s, %s, %s, 'pending') RETURNING id
-            """, (telegram_id, brands, amount))
-            payment_id = cur.fetchone()["id"]
+                UPDATE users SET purchase_q1 = %s, purchase_q2 = %s
+                WHERE telegram_id = %s
+            """, (q1, q2, telegram_id))
         conn.commit()
-    return payment_id
 
 
-def activate_subscription(telegram_id: int) -> bool:
-    """Адмін активує підписку. Бере останній pending payment."""
+def mark_purchase_requested(telegram_id: int):
+    """Позначає, що юзер зробив запит на придбання (закриває доступ)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Деактивуємо підписку і ставимо прапорець
+            cur.execute("UPDATE subscriptions SET active = FALSE WHERE telegram_id = %s", (telegram_id,))
+            cur.execute("UPDATE users SET purchase_requested = TRUE WHERE telegram_id = %s", (telegram_id,))
+        conn.commit()
+
+
+def get_last_brands(telegram_id: int) -> list:
+    """Повертає бренди з останньої підписки юзера (навіть неактивної)."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT * FROM payments
-                WHERE telegram_id = %s AND status = 'pending'
+                SELECT brands FROM subscriptions
+                WHERE telegram_id = %s
                 ORDER BY created_at DESC LIMIT 1
             """, (telegram_id,))
-            payment = cur.fetchone()
-            if not payment:
-                return False
-
-            cur.execute("UPDATE subscriptions SET active = FALSE WHERE telegram_id = %s", (telegram_id,))
-            cur.execute("""
-                INSERT INTO subscriptions (telegram_id, brands, amount, expires_at, active)
-                VALUES (%s, %s, %s, %s, TRUE)
-            """, (
-                telegram_id,
-                payment["brands"],
-                payment["amount"],
-                datetime.now() + timedelta(days=30)
-            ))
-            cur.execute("UPDATE payments SET status = 'paid' WHERE id = %s", (payment["id"],))
-        conn.commit()
-    return True
+            row = cur.fetchone()
+    return list(row["brands"]) if row and row["brands"] else []
 
 
 def get_all_brands() -> list[str]:
-    """Повертає унікальний список брендів з таблиці Curtain Price, відсортований."""
+    """Повертає унікальний список брендів, виключаючи EXCLUDED_BRANDS."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -164,7 +166,20 @@ def get_all_brands() -> list[str]:
                 WHERE supplier IS NOT NULL
                 ORDER BY supplier
             """)
-            return [row["supplier"] for row in cur.fetchall()]
+            all_b = [row["supplier"] for row in cur.fetchall()]
+
+    # Фільтруємо виключення (точне збігання та часткове для прайсу)
+    result = []
+    for b in all_b:
+        b_lower = b.strip().lower()
+        skip = False
+        for excl in EXCLUDED_BRANDS:
+            if excl.lower() in b_lower or b_lower in excl.lower():
+                skip = True
+                break
+        if not skip:
+            result.append(b)
+    return result
 
 
 def get_prices_for_brands(brands: list) -> dict:
@@ -187,25 +202,13 @@ def get_prices_for_brands(brands: list) -> dict:
     return result
 
 
-def get_pending_payments():
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT p.*, u.username, u.first_name
-                FROM payments p
-                JOIN users u ON u.telegram_id = p.telegram_id
-                WHERE p.status = 'pending'
-                ORDER BY p.created_at DESC
-            """)
-            return cur.fetchall()
-
-
 def get_all_users_with_subs():
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT u.telegram_id, u.username, u.first_name, u.trial_used,
-                       s.brands, s.amount, s.expires_at, s.active
+                       u.purchase_requested,
+                       s.brands, s.expires_at, s.active
                 FROM users u
                 LEFT JOIN subscriptions s ON s.telegram_id = u.telegram_id
                     AND s.active = TRUE AND s.expires_at > NOW()
