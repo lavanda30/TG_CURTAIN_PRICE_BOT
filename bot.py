@@ -279,10 +279,10 @@ async def _finish_purchase(query, user, ctx):
 
     # Нотифікація адміну
     if ADMIN_ID:
-        # name = f"@{user.username}" if user.username else user.first_name
+        name = f"@{user.username}" if user.username else user.phone_number
         msg = (
             f"💳 *Новий запит на придбання!*\n\n"
-            f"👤 Юзер: f"@{user.username}" (`{user.id}`)\n"
+            f"👤 Юзер: {name} (`{user.id}`)\n"
             f"🏷 Бренди: {brands_text}\n\n"
             f"❓ Є бренди поза списком: *{q1_text}*\n"
             f"❓ Потрібна кастомізація ціни: *{q2_text}*"
