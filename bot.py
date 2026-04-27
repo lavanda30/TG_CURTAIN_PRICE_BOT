@@ -110,20 +110,15 @@ def kb_brand_select(selected: set, all_brands: list, page: int = 0) -> InlineKey
             ))
         rows.append(row)
 
-    # Навігація
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton("◀️ Назад", callback_data=f"bpg:{page-1}"))
-    if end < len(all_brands):
-        nav.append(InlineKeyboardButton("Далі ▶️", callback_data=f"bpg:{page+1}"))
-    if nav:
-        rows.append(nav)
-
+    # Навігація + Підтвердити в одному рядку
     n = len(selected)
-    rows.append([InlineKeyboardButton(
-        f"✔️ Підтвердити вибір ({n} брендів)",
-        callback_data="confirm_brands"
-    )])
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("◀️ Назад", callback_data=f"bpg:{page-1}"))
+    nav_row.append(InlineKeyboardButton(f"✔️ Підтвердити ({n})", callback_data="confirm_brands"))
+    if end < len(all_brands):
+        nav_row.append(InlineKeyboardButton("Далі ▶️", callback_data=f"bpg:{page+1}"))
+    rows.append(nav_row)
     rows.append([InlineKeyboardButton("❌ Скасувати", callback_data="cancel_purchase")])
     return InlineKeyboardMarkup(rows)
 
@@ -136,9 +131,9 @@ def kb_main(brands: list) -> InlineKeyboardMarkup:
             row.append(InlineKeyboardButton(f"🧵 {b}", callback_data=f"brand:{b}:0"))
         rows.append(row)
     rows.append([
-        InlineKeyboardButton("📋 Мої бренди",       callback_data="mysub"),
+        InlineKeyboardButton("📋 Мої бренди",      callback_data="mysub"),
+        InlineKeyboardButton("🔄 Змінити бренди", callback_data="change_brands"),
     ])
-    rows.append([InlineKeyboardButton("🔄 Змінити бренди",  callback_data="change_brands")])
     rows.append([InlineKeyboardButton("💳 Отримати бота",         callback_data="purchase_start")])
     return InlineKeyboardMarkup(rows)
 
@@ -271,16 +266,19 @@ async def _finish_purchase(query, user, ctx):
     q1_text = "Так" if q1 == "yes" else "Ні"
     q2_text = "Так" if q2 == "yes" else "Ні"
 
-    # Зберегти в БД і закрити доступ
+    # Зберегти запит в БД, але НЕ блокувати доступ якщо триал ще активний
     save_purchase_request(user.id, q1, q2)
-    mark_purchase_requested(user.id)
+    active_sub = get_active_subscription(user.id)
+    if not active_sub:
+        mark_purchase_requested(user.id)
     _purchase.pop(user.id, None)
 
     await query.edit_message_text(
         "✅ *Ваш запит надіслано!*\n\n"
         "Адмін зв'яжеться з вами найближчим часом. 🙏\n\n"
-        "Дякуємо за інтерес до нашого сервісу!",
-        parse_mode="Markdown"
+        + ("⏳ Ваш пробний доступ скоро закінчиться. Після цього ви отримаєте власного бота!" if active_sub else "Дякуємо за інтерес до нашого сервісу!"),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Головна", callback_data="main")]]) if active_sub else None
     )
 
     # Нотифікація адміну
@@ -508,10 +506,12 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif cmd == "cancel_purchase":
         _pending.pop(user.id, None)
         _purchase.pop(user.id, None)
+        # ВАЖЛИВО: завжди перевіряємо активну підписку — не блокуємо доступ
         sub = get_active_subscription(user.id)
         if sub:
             await _show_main(q, sub)
         else:
+            # Триал не активний і не починався — пропонуємо вибрати бренди
             await q.edit_message_text(
                 "↩️ Скасовано.",
                 reply_markup=InlineKeyboardMarkup([[
