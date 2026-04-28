@@ -45,6 +45,8 @@ BRAND_ICONS = [
 _pending: dict = {}
 # Стан purchase flow: {user_id: {"step": ..., "brands": [...]}}
 _purchase: dict = {}
+# Кеш результатів пошуку: {user_id: {"query": str, "by_supplier": {supplier: [rows]}}}
+_search_cache: dict = {}
 
 
 # ══════════════════════════════════════════
@@ -139,6 +141,38 @@ def kb_main(brands: list, purchase_requested: bool = False) -> InlineKeyboardMar
     return InlineKeyboardMarkup(rows)
 
 
+def kb_supplier_select(by_supplier: dict, query: str) -> InlineKeyboardMarkup:
+    """Клавіатура вибору постачальника після пошуку з >7 результатів."""
+    rows = []
+    all_b = get_all_brands()
+    for supplier, items in sorted(by_supplier.items()):
+        icon = brand_icon(supplier, all_b)
+        rows.append([InlineKeyboardButton(
+            f"{icon} {supplier}  ({len(items)} поз.)",
+            callback_data=f"srch_sup:{supplier}"
+        )])
+    rows.append([InlineKeyboardButton("🏠 Головна", callback_data="main")])
+    return InlineKeyboardMarkup(rows)
+
+
+def kb_search_nav(supplier: str, items: list, page: int, query: str) -> InlineKeyboardMarkup:
+    """Навігація по сторінках результатів пошуку конкретного постачальника."""
+    total = (len(items) + PAGE_SIZE - 1) // PAGE_SIZE
+    nav   = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️", callback_data=f"srch_pg:{supplier}:{page-1}"))
+    if page < total - 1:
+        nav.append(InlineKeyboardButton("▶️", callback_data=f"srch_pg:{supplier}:{page+1}"))
+    rows = []
+    if nav:
+        rows.append(nav)
+    rows.append([
+        InlineKeyboardButton("🔙 До постачальників", callback_data="srch_back"),
+        InlineKeyboardButton("🏠 Головна", callback_data="main"),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
 def kb_brand_nav(supplier: str, items: list, page: int) -> InlineKeyboardMarkup:
     total = (len(items) + PAGE_SIZE - 1) // PAGE_SIZE
     nav   = []
@@ -216,7 +250,10 @@ async def _show_main(message_or_query, sub):
         f"📦 Брендів: *{len(brands)}* · Позицій: *{total}*\n\n"
         "Оберіть бренд або введіть код/ім'я тканини:"
     )
-    kb = kb_main(sorted(d.keys()))
+    # Перевіряємо чи юзер вже зробив запит на придбання
+    db_user = get_user(sub["telegram_id"])
+    purchase_requested = bool(db_user and db_user.get("purchase_requested"))
+    kb = kb_main(sorted(d.keys()), purchase_requested=purchase_requested)
 
     if hasattr(message_or_query, "reply_text"):
         await message_or_query.reply_text(text, parse_mode="Markdown", reply_markup=kb)
@@ -522,6 +559,53 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ])
         )
 
+    # ── Результати пошуку: вибір постачальника ──
+    elif cmd.startswith("srch_sup:"):
+        supplier = cmd[len("srch_sup:"):]
+        cache    = _search_cache.get(user.id)
+        if not cache:
+            await q.edit_message_text("⏳ Сесія пошуку закінчилась. Введіть запит ще раз.")
+            return
+        items = cache["by_supplier"].get(supplier, [])
+        if not items:
+            await q.edit_message_text("❌ Позиції не знайдено.")
+            return
+        text = _build_search_supplier_text(supplier, items, 0, cache["query"])
+        await q.edit_message_text(
+            text, parse_mode="Markdown",
+            reply_markup=kb_search_nav(supplier, items, 0, cache["query"])
+        )
+
+    # ── Пагінація результатів пошуку ──
+    elif cmd.startswith("srch_pg:"):
+        _, supplier, page_str = cmd.split(":", 2)
+        page  = int(page_str)
+        cache = _search_cache.get(user.id)
+        if not cache:
+            await q.edit_message_text("⏳ Сесія пошуку закінчилась. Введіть запит ще раз.")
+            return
+        items = cache["by_supplier"].get(supplier, [])
+        text  = _build_search_supplier_text(supplier, items, page, cache["query"])
+        await q.edit_message_text(
+            text, parse_mode="Markdown",
+            reply_markup=kb_search_nav(supplier, items, page, cache["query"])
+        )
+
+    # ── Повернення до списку постачальників пошуку ──
+    elif cmd == "srch_back":
+        cache = _search_cache.get(user.id)
+        if not cache:
+            await q.edit_message_text("⏳ Сесія пошуку закінчилась. Введіть запит ще раз.")
+            return
+        total     = sum(len(v) for v in cache["by_supplier"].values())
+        total_sup = len(cache["by_supplier"])
+        await q.edit_message_text(
+            f"🔍 По запиту *{cache['query']}* знайдено *{total}* позицій у *{total_sup}* постачальників.\n\n"
+            f"Оберіть постачальника для перегляду:",
+            parse_mode="Markdown",
+            reply_markup=kb_supplier_select(cache["by_supplier"], cache["query"])
+        )
+
     # ── Purchase flow ──
     elif cmd == "cancel_purchase":
         _pending.pop(user.id, None)
@@ -620,24 +704,55 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    shown = results[:7]
-    msg   = f"🔍 Знайдено *{len(results)}* по «{query}»:\n\n"
-    for supplier, row in shown:
+    # Групуємо по постачальнику
+    by_supplier: dict = {}
+    for supplier, row in results:
+        by_supplier.setdefault(supplier, []).append(row)
+
+    if len(results) > 7:
+        # Зберігаємо в кеш і показуємо вибір постачальника
+        _search_cache[user.id] = {"query": query, "by_supplier": by_supplier}
+        total_sup = len(by_supplier)
+        await update.message.reply_text(
+            f"🔍 По запиту *{query}* знайдено *{len(results)}* позицій у *{total_sup}* постачальників.\n\n"
+            f"Оберіть постачальника для перегляду:",
+            parse_mode="Markdown",
+            reply_markup=kb_supplier_select(by_supplier, query)
+        )
+        return
+
+    # ≤7 результатів — показуємо одразу
+    msg = f"🔍 Знайдено *{len(results)}* по «{query}»:\n\n"
+    for supplier, row in results:
         tag   = get_tag(row)
         sku   = str(row.get("sku") or row.get("name") or "?").strip()
         price = fmt_price(row)
         h     = row.get("height_cm")
         h_str = f" · {int(float(h))}см" if h else ""
         msg  += f"{tag}[{supplier}] `{sku}` — {price}{h_str}\n"
-    if len(results) > 7:
-        msg += f"\n_Знайдено більше 7. Уточніть запит для кращого результату._"
 
     await update.message.reply_text(
         msg, parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🏠 Головна",     callback_data="main"),
+            InlineKeyboardButton("🏠 Головна", callback_data="main"),
         ]])
     )
+
+
+def _build_search_supplier_text(supplier: str, items: list, page: int, query: str) -> str:
+    start = page * PAGE_SIZE
+    end   = min(start + PAGE_SIZE, len(items))
+    text  = f"🔍 *{supplier}* · запит «{query}»\nПоказано {start+1}–{end} з {len(items)}\n\n"
+    for row in items[start:end]:
+        tag   = get_tag(row)
+        sku   = str(row.get("sku") or row.get("name") or "?").strip()
+        price = fmt_price(row)
+        h     = row.get("height_cm")
+        h_str = f" · {int(float(h))}см" if h else ""
+        color = row.get("color")
+        c_str = f" · _{color}_" if color else ""
+        text += f"{tag}`{sku}` — {price}{h_str}{c_str}\n"
+    return text
 
 
 def _build_brand_text(supplier: str, items: list, page: int) -> str:
