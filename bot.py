@@ -246,8 +246,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Нотифікація адміну про новий вхід (ще до вибору брендів)
     if ADMIN_ID:
         if user.username:
-            safe_un = user.username.replace("_", "\_")
-            name_line = f"@{safe_un} (`{user.id}`)"
+            name_line = f"@{user.username} (`{user.id}`)"
         else:
             first = user.first_name or ""
             last  = (" " + user.last_name) if user.last_name else ""
@@ -364,11 +363,8 @@ async def _finish_purchase(query, user, ctx):
     # Нотифікація адміну
     if ADMIN_ID:
         if user.username:
-            # Зберігаємо підкреслення, щоб @Anna_Love не ставало @AnnaLove
-            safe_username = user.username.replace("_", "\_")
-            name_line = f"@{safe_username} (`{user.id}`)"
+            name_line = f"@{user.username} (`{user.id}`)"
         else:
-            # Немає username — даємо ім'я + посилання tg://user?id=...
             first = user.first_name or ""
             last  = (" " + user.last_name) if user.last_name else ""
             name_line = f"[{first}{last}](tg://user?id={user.id}) (`{user.id}`)"
@@ -471,10 +467,8 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # Нотифікація адміну
             if ADMIN_ID:
                 db_user = get_user(user.id)
-                name = f"@{user.username.replace('_', '\\_')}" if user.username else user.first_name
                 if user.username:
-                    safe_un = user.username.replace("_", "\_")
-                    name = f"@{safe_un}"
+                    name = f"@{user.username}"
                 else:
                     first = user.first_name or ""
                     last  = (" " + user.last_name) if user.last_name else ""
@@ -715,8 +709,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Логування запиту юзера адміну
     if ADMIN_ID:
         if user.username:
-            safe_un = user.username.replace("_", "\_")
-            name_short = f"@{safe_un}"
+            name_short = f"@{user.username}"
         else:
             name_short = user.first_name or str(user.id)
         try:

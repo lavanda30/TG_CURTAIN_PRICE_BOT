@@ -134,6 +134,18 @@ def save_purchase_request(telegram_id: int, q1: str, q2: str):
         conn.commit()
 
 
+def set_purchase_requested_flag(telegram_id: int):
+    """Ставить purchase_requested=True БЕЗ деактивації підписки."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET purchase_requested = TRUE WHERE telegram_id = %s",
+                (telegram_id,)
+            )
+        conn.commit()
+
+
+
 def mark_purchase_requested(telegram_id: int):
     """Позначає, що юзер зробив запит на придбання (закриває доступ)."""
     with get_conn() as conn:
@@ -210,8 +222,12 @@ def get_all_users_with_subs():
                        u.purchase_requested,
                        s.brands, s.expires_at, s.active
                 FROM users u
-                LEFT JOIN subscriptions s ON s.telegram_id = u.telegram_id
-                    AND s.active = TRUE AND s.expires_at > NOW()
+                LEFT JOIN LATERAL (
+                    SELECT brands, expires_at, active
+                    FROM subscriptions
+                    WHERE telegram_id = u.telegram_id
+                    ORDER BY created_at DESC LIMIT 1
+                ) s ON TRUE
                 ORDER BY u.created_at DESC
             """)
             return cur.fetchall()
