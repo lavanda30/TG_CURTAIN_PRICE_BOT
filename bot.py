@@ -20,6 +20,7 @@ from db import (
     get_all_users_with_subs,
     save_purchase_request,
     mark_purchase_requested,
+    set_purchase_requested_flag,
     get_last_brands,
     TRIAL_DAYS,
 )
@@ -75,7 +76,7 @@ def fmt_price(row: dict) -> str:
         return str(main)
     if currency in ("USD", "У.Е.", "U.E.", "$"):
         uah = round(f * UAH_RATE * 2)
-        val = int(f) if f == int(f) else f
+        val = int(f) if f == int(f) else round(f, 2)
         return f"*{val}$* · ~{uah}грн"
     return f"*{f:.2f}* грн"
 
@@ -100,27 +101,42 @@ def kb_brand_select(selected: set, all_brands: list, page: int = 0) -> InlineKey
     chunk = all_brands[start:end]
     rows  = []
 
-    # Два стовпчики, іконка перед чекбоксом — назва бренду завжди починається з однакової позиції
+    # Два стовпчики, без іконок бренду — тільки чекбокс + назва
     for i in range(0, len(chunk), 2):
         row = []
         for brand in chunk[i:i+2]:
-            mark = "✅" if brand in selected else "⬜"
-            icon = brand_icon(brand, all_brands)
+            mark = "✅" if brand in selected else "◻️"
             row.append(InlineKeyboardButton(
-                f"{icon} {mark} {brand}",
+                f"{mark} {brand}",
                 callback_data=f"tgl:{brand}:{page}"
             ))
         rows.append(row)
 
-    # Навігація + Підтвердити в одному рядку
+    # Кнопка Підтвердити — окремим помітним рядком
     n = len(selected)
+    if n > 0:
+        rows.append([InlineKeyboardButton(
+            f"━━━━━━━━━━━━━━━━━━━━",
+            callback_data="noop"
+        )])
+        rows.append([InlineKeyboardButton(
+            f"✅  ПІДТВЕРДИТИ  ({n} обрано)",
+            callback_data="confirm_brands"
+        )])
+    else:
+        rows.append([InlineKeyboardButton(
+            f"── Оберіть бренди вище ──",
+            callback_data="noop"
+        )])
+
+    # Навігація
     nav_row = []
     if page > 0:
         nav_row.append(InlineKeyboardButton("◀️ Назад", callback_data=f"bpg:{page-1}"))
-    nav_row.append(InlineKeyboardButton(f"✔️ Підтвердити ({n})", callback_data="confirm_brands"))
     if end < len(all_brands):
         nav_row.append(InlineKeyboardButton("Далі ▶️", callback_data=f"bpg:{page+1}"))
-    rows.append(nav_row)
+    if nav_row:
+        rows.append(nav_row)
     rows.append([InlineKeyboardButton("❌ Скасувати", callback_data="cancel_purchase")])
     return InlineKeyboardMarkup(rows)
 
@@ -226,6 +242,27 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Перший раз — показуємо вибір брендів
     all_brands = get_all_brands()
     _pending[user.id] = {"selected": set(), "mode": "trial"}
+
+    # Нотифікація адміну про новий вхід (ще до вибору брендів)
+    if ADMIN_ID:
+        if user.username:
+            safe_un = user.username.replace("_", "\_")
+            name_line = f"@{safe_un} (`{user.id}`)"
+        else:
+            first = user.first_name or ""
+            last  = (" " + user.last_name) if user.last_name else ""
+            name_line = f"[{first}{last}](tg://user?id={user.id}) (`{user.id}`)"
+        try:
+            await ctx.bot.send_message(
+                ADMIN_ID,
+                f"👀 *Новий юзер відкрив бота*\n\n"
+                f"👤 {name_line}\n"
+                f"⏳ Ще не обрав бренди",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.warning(f"Не вдалось надіслати нотифікацію адміну: {e}")
+
     await update.message.reply_text(
         f"👋 Привіт, *{user.first_name}*!\n\n"
         f"🎁 Вам доступний *{TRIAL_DAYS}-денний повний доступ*.\n\n"
@@ -304,17 +341,22 @@ async def _finish_purchase(query, user, ctx):
     q1_text = "Так" if q1 == "yes" else "Ні"
     q2_text = "Так" if q2 == "yes" else "Ні"
 
-    # Зберегти запит в БД, але НЕ блокувати доступ якщо триал ще активний
+    # Зберігаємо запит і ЗАВЖДИ ставимо флаг purchase_requested=True.
+    # Якщо тріал ще активний — НЕ деактивуємо підписку, щоб доступ залишився до кінця.
     save_purchase_request(user.id, q1, q2)
     active_sub = get_active_subscription(user.id)
-    if not active_sub:
+    # Завжди ставимо прапорець (але mark_purchase_requested деактивує підписку — не хочемо цього при активному тріалі)
+    if active_sub:
+        # Тільки ставимо флаг в таблиці users, підписку не чіпаємо
+        set_purchase_requested_flag(user.id)
+    else:
         mark_purchase_requested(user.id)
     _purchase.pop(user.id, None)
 
     await query.edit_message_text(
         "✅ *Ваш запит надіслано!*\n\n"
         "Адмін зв'яжеться з вами найближчим часом. 🙏\n\n"
-        + ("⏳ Ваш пробний доступ скоро закінчиться. Після цього ви отримаєте власного бота!" if active_sub else "Дякуємо за інтерес до нашого сервісу!"),
+        + ("⏳ Ваш пробний доступ діє до кінця терміну. Після цього ви отримаєте власного бота!" if active_sub else "Дякуємо за інтерес до нашого сервісу!"),
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Головна", callback_data="main")]]) if active_sub else None
     )
@@ -348,6 +390,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     user = q.from_user
     cmd  = q.data
+
+    # Пуста кнопка (роздільник) — ігноруємо
+    if cmd == "noop":
+        return
 
     # ── Зміна брендів ──
     if cmd == "change_brands":
@@ -444,21 +490,13 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
 
             sub = get_active_subscription(user.id)
-            # Показуємо бренди в 2 стовпці
+            # Показуємо бренди в 1 стовпець з іконками
             all_b = get_all_brands()
-            lines = []
-            for i in range(0, len(brands_list), 2):
-                left = f"{brand_icon(brands_list[i], all_b)} {brands_list[i]}"
-                if i + 1 < len(brands_list):
-                    right = f"{brand_icon(brands_list[i+1], all_b)} {brands_list[i+1]}"
-                    lines.append(f"{left:<22} {right}")
-                else:
-                    lines.append(left)
+            lines = [f"{brand_icon(b, all_b)} {b}" for b in brands_list]
             brands_text = "\n".join(lines)
             await q.edit_message_text(
                 f"✅ *Чудово!* Ваш пробний доступ активовано!\n\n"
-                f"Ви обрали *{len(brands_list)} брендів:*\n`{brands_text}`\n\n"
-                f"⏱ Доступ діє *{TRIAL_DAYS} дні*",
+                f"Ви обрали *{len(brands_list)} брендів:*\n`{brands_text}`",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("🏠 Перейти до прайсів", callback_data="main")
@@ -472,15 +510,8 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             _pending.pop(user.id, None)
             sub = get_active_subscription(user.id)
             all_b = get_all_brands()
-            # Два стовпці в тексті
-            lines = []
-            for i in range(0, len(brands_list), 2):
-                left  = f"{brand_icon(brands_list[i], all_b)} {brands_list[i]}"
-                if i + 1 < len(brands_list):
-                    right = f"{brand_icon(brands_list[i+1], all_b)} {brands_list[i+1]}"
-                    lines.append(f"{left:<22} {right}")
-                else:
-                    lines.append(left)
+            # Один стовпець з іконками
+            lines = [f"{brand_icon(b, all_b)} {b}" for b in brands_list]
             brands_text = "\n".join(lines)
             await q.edit_message_text(
                 f"✅ Бренди оновлено!\n\n"
@@ -659,6 +690,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    query_text = update.message.text.strip()
 
     # Якщо юзер в стані вибору брендів (pending) — підказка
     if user.id in _pending:
@@ -677,8 +709,26 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    query   = update.message.text.strip()
+    query   = query_text
     q_lower = query.lower()
+
+    # Логування запиту юзера адміну
+    if ADMIN_ID:
+        if user.username:
+            safe_un = user.username.replace("_", "\_")
+            name_short = f"@{safe_un}"
+        else:
+            name_short = user.first_name or str(user.id)
+        try:
+            await ctx.bot.send_message(
+                ADMIN_ID,
+                f"🔍 *Запит юзера*\n"
+                f"👤 {name_short} (`{user.id}`)\n"
+                f"💬 `{query}`",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.warning(f"Не вдалось надіслати запит адміну: {e}")
     d       = get_prices_for_brands(sub["brands"])
 
     results = []
