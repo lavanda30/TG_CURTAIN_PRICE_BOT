@@ -93,11 +93,14 @@ def start_trial(telegram_id: int, brands: list) -> datetime:
     expires = datetime.now() + timedelta(days=TRIAL_DAYS)
     with get_conn() as conn:
         with conn.cursor() as cur:
+            cur.execute("SELECT username FROM users WHERE telegram_id = %s", (telegram_id,))
+            row = cur.fetchone()
+            username = row["username"] if row else None
             cur.execute("UPDATE subscriptions SET active = FALSE WHERE telegram_id = %s", (telegram_id,))
             cur.execute("""
-                INSERT INTO subscriptions (telegram_id, brands, expires_at, active)
-                VALUES (%s, %s, %s, TRUE)
-            """, (telegram_id, brands, expires))
+                INSERT INTO subscriptions (telegram_id, brands, expires_at, active, username)
+                VALUES (%s, %s, %s, TRUE, %s)
+            """, (telegram_id, brands, expires, username))
             cur.execute("UPDATE users SET trial_used = TRUE WHERE telegram_id = %s", (telegram_id,))
         conn.commit()
     return expires
