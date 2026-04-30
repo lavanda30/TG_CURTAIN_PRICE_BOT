@@ -40,20 +40,22 @@ def init_db():
                 );
 
                 CREATE TABLE IF NOT EXISTS subscriptions (
-                    id          SERIAL PRIMARY KEY,
-                    telegram_id BIGINT REFERENCES users(telegram_id),
-                    brands      TEXT[],
-                    expires_at  TIMESTAMP,
-                    active      BOOLEAN DEFAULT FALSE,
-                    created_at  TIMESTAMP DEFAULT NOW()
+                    id               SERIAL PRIMARY KEY,
+                    telegram_id      BIGINT REFERENCES users(telegram_id),
+                    brands           TEXT[],
+                    expires_at       TIMESTAMP,
+                    active           BOOLEAN DEFAULT FALSE,
+                    manually_active  BOOLEAN DEFAULT FALSE,
+                    created_at       TIMESTAMP DEFAULT NOW()
                 );
             """)
 
-            # Додати нові колонки якщо таблиця вже існує (міграція)
+            # Міграція: додаємо колонки якщо ще нема
             for col_def in [
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS purchase_requested BOOLEAN DEFAULT FALSE",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS purchase_q1 TEXT",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS purchase_q2 TEXT",
+                "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS manually_active BOOLEAN DEFAULT FALSE",
             ]:
                 try:
                     cur.execute(col_def)
@@ -113,11 +115,18 @@ def update_trial_brands(telegram_id: int, brands: list):
 
 
 def get_active_subscription(telegram_id: int):
+    """
+    Повертає активну підписку.
+    Активна = (active=TRUE AND expires_at > NOW()) АБО manually_active=TRUE.
+    Якщо manually_active — expires_at не перевіряємо (безстроково).
+    """
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT * FROM subscriptions
-                WHERE telegram_id = %s AND active = TRUE AND expires_at > NOW()
+                WHERE telegram_id = %s
+                  AND active = TRUE
+                  AND (manually_active = TRUE OR expires_at > NOW())
                 ORDER BY expires_at DESC LIMIT 1
             """, (telegram_id,))
             return cur.fetchone()
