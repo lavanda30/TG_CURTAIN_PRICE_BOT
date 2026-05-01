@@ -239,9 +239,15 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Перший раз — показуємо вибір брендів
+    # Перший раз — показуємо привітальне повідомлення і вибір брендів
     all_brands = get_all_brands()
     _pending[user.id] = {"selected": set(), "mode": "trial"}
+
+    # Дефолтне повідомлення-підказка
+    await update.message.reply_text(
+        "Привіт, я ваш бот-помічник для миттєвого пошуку потрібної інформації.\n"
+        "Щоб легко знайти потрібний товар, просто введіть артикул або його частину, і я миттєво покажу його ціну."
+    )
 
     # Нотифікація адміну про новий вхід (ще до вибору брендів)
     if ADMIN_ID:
@@ -678,6 +684,31 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         _purchase[user.id]["q2"] = answer
         await _finish_purchase(q, user, ctx)
 
+    # ── Адмін: вибрати користувача для надсилання ──
+    elif cmd.startswith("send_to:") and user.id == ADMIN_ID:
+        target_id = int(cmd.split(":")[1])
+        state = _send_state.get(ADMIN_ID, {})
+        users = state.get("users", [])
+        target = next((u for u in users if u["telegram_id"] == target_id), None)
+        target_name = f"@{target['username']}" if target and target.get('username') else (target['first_name'] if target else str(target_id))
+
+        _send_state[ADMIN_ID] = {
+            "step": "type_message",
+            "target_id": target_id,
+            "target_name": target_name,
+            "users": users,
+        }
+        await q.edit_message_text(
+            f"📨 *Надсилаємо повідомлення користувачу:* {target_name}\n\n"
+            f"Напишіть текст повідомлення наступним повідомленням. Бот відправить його від свого імені.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Скасувати", callback_data="send_cancel")]])
+        )
+
+    elif cmd == "send_cancel" and user.id == ADMIN_ID:
+        _send_state.pop(ADMIN_ID, None)
+        await q.edit_message_text("✔️ Розсилку скасовано.")
+
 
 # ══════════════════════════════════════════
 #  Текстовий пошук
@@ -685,6 +716,23 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     query_text = update.message.text.strip()
+
+    # Адмін: обробка введеного повідомлення для надсилання
+    if user.id == ADMIN_ID:
+        state = _send_state.get(ADMIN_ID, {})
+        if state.get("step") == "type_message":
+            target_id   = state["target_id"]
+            target_name = state["target_name"]
+            try:
+                await ctx.bot.send_message(target_id, query_text)
+                _send_state.pop(ADMIN_ID, None)
+                await update.message.reply_text(
+                    f"✅ Повідомлення надіслано користувачу *{target_name}*.",
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                await update.message.reply_text(f"❌ Помилка надсилання: {e}")
+            return
 
     # Якщо юзер в стані вибору брендів (pending) — підказка
     if user.id in _pending:
@@ -817,6 +865,11 @@ def _build_brand_text(supplier: str, items: list, page: int) -> str:
 # ══════════════════════════════════════════
 #  Адмін команди
 # ══════════════════════════════════════════
+
+# Стан розсилки: {admin_id: {"step": "choose_user" | "type_message", "target_id": int, "target_name": str, "users": list}}
+_send_state: dict = {}
+
+
 async def cmd_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -837,6 +890,37 @@ async def cmd_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 
+async def cmd_send(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Адмін обирає користувача і надсилає йому повідомлення від імені бота."""
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    users = get_all_users_with_subs()
+    if not users:
+        await update.message.reply_text("Немає користувачів для розсилки.")
+        return
+
+    # Зберігаємо список і стан
+    _send_state[ADMIN_ID] = {"step": "choose_user", "users": list(users)}
+
+    # Формуємо inline-клавіатуру з усіма юзерами
+    rows = []
+    for u in users:
+        name = f"@{u['username']}" if u['username'] else (u['first_name'] or str(u['telegram_id']))
+        status = "✅" if u.get('active') else "⬜"
+        rows.append([InlineKeyboardButton(
+            f"{status} {name} ({u['telegram_id']})",
+            callback_data=f"send_to:{u['telegram_id']}"
+        )])
+    rows.append([InlineKeyboardButton("❌ Скасувати", callback_data="send_cancel")])
+
+    await update.message.reply_text(
+        "📨 *Надіслати повідомлення від бота*\n\nОберіть користувача:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows)
+    )
+
+
 # ══════════════════════════════════════════
 #  main
 # ══════════════════════════════════════════
@@ -851,6 +935,7 @@ def main():
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("users", cmd_users))
+    app.add_handler(CommandHandler("send", cmd_send))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 

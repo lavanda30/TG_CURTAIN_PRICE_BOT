@@ -11,7 +11,7 @@ from psycopg2.extras import RealDictCursor
 
 logger = logging.getLogger(__name__)
 
-TRIAL_DAYS = 2
+TRIAL_DAYS = 5
 
 # Бренди-виключення (не показувати в списку)
 EXCLUDED_BRANDS = {"NoName", "NO NAME", "прайс 01.10.2025"}
