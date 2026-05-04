@@ -829,11 +829,14 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+_NUM_EMOJI = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+
 def _build_search_supplier_text(supplier: str, items: list, page: int, query: str) -> str:
     start = page * PAGE_SIZE
     end   = min(start + PAGE_SIZE, len(items))
     text  = f"🔍 *{supplier}* · запит «{query}»\nПоказано {start+1}–{end} з {len(items)}\n\n"
-    for row in items[start:end]:
+    for i, row in enumerate(items[start:end]):
+        num   = _NUM_EMOJI[start + i] if (start + i) < len(_NUM_EMOJI) else f"{start+i+1}."
         tag   = get_tag(row)
         sku   = str(row.get("sku") or row.get("name") or "?").strip()
         price = fmt_price(row)
@@ -841,7 +844,7 @@ def _build_search_supplier_text(supplier: str, items: list, page: int, query: st
         h_str = f" · {int(float(h))}см" if h else ""
         color = row.get("color")
         c_str = f" · _{color}_" if color else ""
-        text += f"{tag}`{sku}` — {price}{h_str}{c_str}\n"
+        text += f"{num} {tag}`{sku}` — {price}{h_str}{c_str}\n"
     return text
 
 
