@@ -13,6 +13,7 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes,
 )
+from telegram.error import BadRequest
 from db import (
     init_db, upsert_user, get_user, start_trial,
     get_active_subscription,
@@ -112,7 +113,7 @@ def kb_brand_select(selected: set, all_brands: list, page: int = 0) -> InlineKey
             ))
         rows.append(row)
 
-    # Навігація — одразу після брендів (замість роздільника)
+    # Навігація — одразу після брендів
     nav_row = []
     if page > 0:
         nav_row.append(InlineKeyboardButton("◀️ Назад", callback_data=f"bpg:{page-1}"))
@@ -121,16 +122,16 @@ def kb_brand_select(selected: set, all_brands: list, page: int = 0) -> InlineKey
     if nav_row:
         rows.append(nav_row)
 
-    # Кнопка Підтвердити — виділена з усіх боків
+    # Кнопка Підтвердити — яскраво виділена
     n = len(selected)
     if n > 0:
         rows.append([InlineKeyboardButton(
-            f"◀️◀️◀️  ПІДТВЕРДИТИ  ({n} обрано)  ▶️▶️▶️",
+            f"👉 ПІДТВЕРДИТИ ({n} обрано) 👈",
             callback_data="confirm_brands"
         )])
     else:
         rows.append([InlineKeyboardButton(
-            f"── Оберіть бренди вище ──",
+            "⬜ Оберіть бренди вище",
             callback_data="noop"
         )])
 
@@ -429,11 +430,15 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             selected.add(brand)
         all_brands = get_all_brands()
         n = len(selected)
-        await q.edit_message_text(
-            f"📦 *Оберіть бренди та підтвердіть вибір:*\nОбрано: *{n}*",
-            parse_mode="Markdown",
-            reply_markup=kb_brand_select(selected, all_brands, page)
-        )
+        try:
+            await q.edit_message_text(
+                f"📦 *Оберіть бренди та підтвердіть вибір:*\nОбрано: *{n}*",
+                parse_mode="Markdown",
+                reply_markup=kb_brand_select(selected, all_brands, page)
+            )
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                raise
 
     # ── Пагінація бренд-вибору ──
     elif cmd.startswith("bpg:"):
@@ -442,11 +447,15 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         selected   = state.get("selected", set())
         all_brands = get_all_brands()
         n = len(selected)
-        await q.edit_message_text(
-            f"📦 *Оберіть бренди та підтвердіть вибір:*\nОбрано: *{n}*",
-            parse_mode="Markdown",
-            reply_markup=kb_brand_select(selected, all_brands, page)
-        )
+        try:
+            await q.edit_message_text(
+                f"📦 *Оберіть бренди та підтвердіть вибір:*\nОбрано: *{n}*",
+                parse_mode="Markdown",
+                reply_markup=kb_brand_select(selected, all_brands, page)
+            )
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                raise
 
     # ── Підтвердження вибору брендів ──
     elif cmd == "confirm_brands":
