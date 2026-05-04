@@ -112,15 +112,20 @@ def kb_brand_select(selected: set, all_brands: list, page: int = 0) -> InlineKey
             ))
         rows.append(row)
 
-    # Кнопка Підтвердити — окремим помітним рядком
+    # Навігація — одразу після брендів (замість роздільника)
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("◀️ Назад", callback_data=f"bpg:{page-1}"))
+    if end < len(all_brands):
+        nav_row.append(InlineKeyboardButton("Далі ▶️", callback_data=f"bpg:{page+1}"))
+    if nav_row:
+        rows.append(nav_row)
+
+    # Кнопка Підтвердити — виділена з усіх боків
     n = len(selected)
     if n > 0:
         rows.append([InlineKeyboardButton(
-            f"━━━━━━━━━━━━━━━━━━━━",
-            callback_data="noop"
-        )])
-        rows.append([InlineKeyboardButton(
-            f"✅  ПІДТВЕРДИТИ  ({n} обрано)",
+            f"◀️◀️◀️  ПІДТВЕРДИТИ  ({n} обрано)  ▶️▶️▶️",
             callback_data="confirm_brands"
         )])
     else:
@@ -129,14 +134,6 @@ def kb_brand_select(selected: set, all_brands: list, page: int = 0) -> InlineKey
             callback_data="noop"
         )])
 
-    # Навігація
-    nav_row = []
-    if page > 0:
-        nav_row.append(InlineKeyboardButton("◀️ Назад", callback_data=f"bpg:{page-1}"))
-    if end < len(all_brands):
-        nav_row.append(InlineKeyboardButton("Далі ▶️", callback_data=f"bpg:{page+1}"))
-    if nav_row:
-        rows.append(nav_row)
     rows.append([InlineKeyboardButton("❌ Скасувати", callback_data="cancel_purchase")])
     return InlineKeyboardMarkup(rows)
 
@@ -433,7 +430,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         all_brands = get_all_brands()
         n = len(selected)
         await q.edit_message_text(
-            f"📦 Оберіть бренди:\nОбрано: *{n}*",
+            f"📦 *Оберіть бренди та підтвердіть вибір:*\nОбрано: *{n}*",
             parse_mode="Markdown",
             reply_markup=kb_brand_select(selected, all_brands, page)
         )
@@ -446,7 +443,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         all_brands = get_all_brands()
         n = len(selected)
         await q.edit_message_text(
-            f"📦 Оберіть бренди:\nОбрано: *{n}*",
+            f"📦 *Оберіть бренди та підтвердіть вибір:*\nОбрано: *{n}*",
             parse_mode="Markdown",
             reply_markup=kb_brand_select(selected, all_brands, page)
         )
@@ -812,15 +809,17 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ≤7 результатів — показуємо одразу
+    # ≤7 результатів — показуємо одразу з нумерацією
+    NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣"]
     msg = f"🔍 Знайдено *{len(results)}* по «{query}»:\n\n"
-    for supplier, row in results:
+    for idx, (supplier, row) in enumerate(results):
         tag   = get_tag(row)
+        num   = NUM_EMOJI[idx] if idx < len(NUM_EMOJI) else f"{idx+1}."
         sku   = str(row.get("sku") or row.get("name") or "?").strip()
         price = fmt_price(row)
         h     = row.get("height_cm")
         h_str = f" · {int(float(h))}см" if h else ""
-        msg  += f"{tag}[{supplier}] `{sku}` — {price}{h_str}\n"
+        msg  += f"{num} {tag}[{supplier}] `{sku}` — {price}{h_str}\n"
 
     await update.message.reply_text(
         msg, parse_mode="Markdown",
