@@ -107,12 +107,14 @@ def start_trial(telegram_id: int, brands: list) -> datetime:
 
 
 def update_trial_brands(telegram_id: int, brands: list):
-    """Оновлює список брендів в активній підписці (під час триалу)."""
+    """Оновлює список брендів в активній підписці (під час триалу або manually_active)."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE subscriptions SET brands = %s
-                WHERE telegram_id = %s AND active = TRUE AND expires_at > NOW()
+                WHERE telegram_id = %s
+                  AND active = TRUE
+                  AND (manually_active = TRUE OR expires_at > NOW())
             """, (brands, telegram_id))
         conn.commit()
 
